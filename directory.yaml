@@ -1,0 +1,244 @@
+Description: This template deploys a VPC, with a pair of private subnets spread across two Availability Zones,route tables, an active directory.
+
+Parameters:
+  EnvironmentName:
+    Description: An environment name that is prefixed to resource names
+    Type: String
+    Default: name
+
+  VpcCIDR:
+    Description: IP range (CIDR notation) for VPC
+    Type: String
+    Default: 10.0.0.0/16
+
+  PublicSubnet1CIDR:
+    Description: IP range (CIDR notation) for the public subnet in the first Availability Zone
+    Type: String
+    Default: 10.0.10.0/24
+
+  PublicSubnet2CIDR:
+    Description: IP range (CIDR notation) for the public subnet in the second Availability Zone
+    Type: String
+    Default: 10.0.20.0/24
+
+  PrivateSubnet1CIDR:
+    Description: IP range (CIDR notation) for the private subnet in the first Availability Zone
+    Type: String
+    Default: 10.0.30.0/24
+
+  PrivateSubnet2CIDR:
+    Description: IP range (CIDR notation) for the private subnet in the second Availability Zone
+    Type: String
+    Default: 10.0.40.0/24
+
+  Edition:
+    Description: The AWS Microsoft AD edition.
+    Type: String
+    Default: Standard
+    AllowedValues:
+      - Standard
+      - Enterprise
+
+  DomainName:
+    Description: The fully qualified name for the Microsoft Active Directory.
+    Type: String
+    Default: ADname
+
+  MicrosoftADShortName:
+    Description: The NetBIOS name for domain.
+    Type: String
+    Default: name
+
+  EnableSingleSignOn:
+    Description: Whether to enable single sign-on for a Microsoft Active.
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+
+  CreateAlias:
+    Description: A unique alias to assign to the Microsoft Active Directory in AWS.
+    Type: String
+    AllowedValues:
+      - "true"
+      - "false"
+    Default: "false"
+
+  MicrosoftADPW:
+    Description: The password for the default administrative user, Admin.
+    Type: String
+    NoEcho: true
+    Default: bcvghTV#4Gdh
+
+Mappings:
+  AZRegions:
+    ap-south-1:
+      AZs: ["a", "b"]
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCIDR
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${EnvironmentName}-vpc"
+
+  PrivateSubnet1:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone:
+        Fn::Sub:
+          - "${AWS::Region}${AZ}"
+          - AZ: !Select [0, !FindInMap ["AZRegions", !Ref "AWS::Region", "AZs"]]
+      CidrBlock: !Ref PrivateSubnet1CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-private-subnet-1
+
+  PrivateSubnet2:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      AvailabilityZone:
+        Fn::Sub:
+          - "${AWS::Region}${AZ}"
+          - AZ: !Select [1, !FindInMap ["AZRegions", !Ref "AWS::Region", "AZs"]]
+      CidrBlock: !Ref PrivateSubnet2CIDR
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-private-subnet-2
+
+  PrivateRouteTable1:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-private-rtb-1
+
+  PrivateSubnet1RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable1
+      SubnetId: !Ref PrivateSubnet1
+
+  PrivateRouteTable2:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: Name
+          Value: !Sub ${EnvironmentName}-private-rtb-2
+
+  PrivateSubnet2RouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable2
+      SubnetId: !Ref PrivateSubnet2
+
+  Codecommit:
+    Type: AWS::CodeCommit::Repository
+    Properties:
+      RepositoryName: "rodod-devs"
+
+  SgForVPCEndpoint:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Security group to allow access to git-codecommit VPC Endpoint"
+      SecurityGroupIngress:
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: "tcp"
+          FromPort: "443"
+          ToPort: "443"
+      SecurityGroupEgress:
+        - CidrIp: "0.0.0.0/0"
+          IpProtocol: "-1"
+      VpcId: !Ref VPC
+
+  VPCEndpoint:
+    Type: "AWS::EC2::VPCEndpoint"
+    Properties:
+      VpcEndpointType: "Interface"
+      ServiceName: "com.amazonaws.ap-south-1.git-codecommit"
+      VpcId: !Ref VPC
+      SubnetIds:
+        - !Ref PrivateSubnet1
+        - !Ref PrivateSubnet2
+      PrivateDnsEnabled: true
+      PolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal: "*"
+            Action:
+              - "*"
+            Resource:
+              - "*"
+      SecurityGroupIds:
+        - !Ref "SgForVPCEndpoint"
+
+  robodMSDirectory:
+    Type: AWS::DirectoryService::MicrosoftAD
+    Properties:
+      CreateAlias: !Ref CreateAlias
+      Edition: !Ref Edition
+      EnableSso: !Ref EnableSingleSignOn
+      Name: !Ref DomainName
+      Password: !Ref MicrosoftADPW
+      ShortName: !Ref MicrosoftADShortName
+      VpcSettings:
+        SubnetIds:
+          - !Ref PrivateSubnet1
+          - !Ref PrivateSubnet2
+        VpcId: !Ref VPC
+
+  directoryIDsecret:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: /directoryIDsecret
+      Description: Master password of SQL Server.
+      SecretString: !Ref robodMSDirectory
+
+Outputs:
+  VPC:
+    Description: A reference to the created VPC
+    Value: !Ref VPC
+
+  PrivateSubnets:
+    Description: A list of the private subnets
+    Value: !Join [",", [!Ref PrivateSubnet1, !Ref PrivateSubnet2]]
+
+  PrivateSubnet1:
+    Description: A reference to the private subnet in the 1st Availability Zone
+    Value: !Ref PrivateSubnet1
+
+  PrivateSubnet2:
+    Description: A reference to the private subnet in the 2nd Availability Zone
+    Value: !Ref PrivateSubnet2
+
+  DirectoryID:
+    Description: ID of the MS Directory
+    Value: !Ref robodMSDirectory
+
+  PrimaryDNS:
+    Description: DNS IPs of the MS Directory
+    Value: !Select ["0", !GetAtt robodMSDirectory.DnsIpAddresses]
+
+  SecondaryDNS:
+    Description: DNS IPs of the MSDirectory
+    Value: !Select ["1", !GetAtt robodMSDirectory.DnsIpAddresses]
+
+  DirectoryAlias:
+    Description: URL for the alias
+    Value: !GetAtt robodMSDirectory.Alias
+
+  RepositoryID:
+    Description: ID of the created CodeCommit repo
+    Value: !Ref Codecommit
